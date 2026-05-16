@@ -910,10 +910,9 @@ function useAgentTick(
         Math.floor(Math.random() * REMOTE_ROAM_POINTS.length)
       ];
     }
-    return {
-      x: Math.random() * 800 + 100,
-      y: Math.random() * 500 + 100,
-    };
+    // Use known-safe roam points instead of random coordinates that can land
+    // inside furniture footprints and cause the character to clip through objects.
+    return ROAM_POINTS[Math.floor(Math.random() * ROAM_POINTS.length)];
   }, []);
 
   const standupActive =
