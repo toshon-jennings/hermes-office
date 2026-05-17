@@ -2,6 +2,7 @@
 
 import {
   type ReactNode,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -9,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageSquare, ChevronDown, Mic } from "lucide-react";
+import { MessageSquare, ChevronDown, GripHorizontal, Mic } from "lucide-react";
 import { RetroOffice3D } from "@/features/retro-office/RetroOffice3D";
 import type { OfficeAgent } from "@/features/retro-office/core/types";
 import { RunningAvatarLoader } from "@/features/agents/components/RunningAvatarLoader";
@@ -622,6 +623,14 @@ type ChatRosterEntry = {
   isRunning: boolean;
 };
 
+type ChatWindowFrame = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  initialized: boolean;
+};
+
 const EMPTY_REMOTE_CHAT_SESSION: RemoteChatSessionState = {
   draft: "",
   sending: false,
@@ -629,6 +638,11 @@ const EMPTY_REMOTE_CHAT_SESSION: RemoteChatSessionState = {
   messages: [],
 };
 const MAX_REMOTE_MESSAGE_CHARS = 2_000;
+const CHAT_WINDOW_MIN_WIDTH = 440;
+const CHAT_WINDOW_MIN_HEIGHT = 360;
+const CHAT_WINDOW_DEFAULT_WIDTH = 560;
+const CHAT_WINDOW_DEFAULT_HEIGHT = 520;
+const CHAT_WINDOW_VIEWPORT_MARGIN = 12;
 
 const buildRemoteRelayInstruction = (message: string) =>
   [
@@ -638,6 +652,38 @@ const buildRemoteRelayInstruction = (message: string) =>
     "",
     `Message: ${message}`,
   ].join("\n");
+
+const clampValue = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
+
+const constrainChatWindowFrame = (
+  frame: ChatWindowFrame,
+  viewportWidth: number,
+  viewportHeight: number,
+): ChatWindowFrame => {
+  const maxWidth = Math.max(
+    CHAT_WINDOW_MIN_WIDTH,
+    viewportWidth - CHAT_WINDOW_VIEWPORT_MARGIN * 2,
+  );
+  const maxHeight = Math.max(
+    CHAT_WINDOW_MIN_HEIGHT,
+    viewportHeight - CHAT_WINDOW_VIEWPORT_MARGIN * 2,
+  );
+  const width = clampValue(frame.width, CHAT_WINDOW_MIN_WIDTH, maxWidth);
+  const height = clampValue(frame.height, CHAT_WINDOW_MIN_HEIGHT, maxHeight);
+  const x = clampValue(
+    frame.x,
+    CHAT_WINDOW_VIEWPORT_MARGIN,
+    Math.max(CHAT_WINDOW_VIEWPORT_MARGIN, viewportWidth - width - CHAT_WINDOW_VIEWPORT_MARGIN),
+  );
+  const y = clampValue(
+    frame.y,
+    CHAT_WINDOW_VIEWPORT_MARGIN,
+    Math.max(CHAT_WINDOW_VIEWPORT_MARGIN, viewportHeight - height - CHAT_WINDOW_VIEWPORT_MARGIN),
+  );
+
+  return { ...frame, x, y, width, height };
+};
 
 const normalizeOfficeFeedText = (
   value: string | null | undefined,
@@ -938,6 +984,13 @@ export function OfficeScreen({
   const historyInFlightRef = useRef<Set<string>>(new Set());
   const lastTransportHistoryRefreshKeyRef = useRef<Record<string, string>>({});
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatWindowFrame, setChatWindowFrame] = useState<ChatWindowFrame>({
+    x: CHAT_WINDOW_VIEWPORT_MARGIN,
+    y: CHAT_WINDOW_VIEWPORT_MARGIN,
+    width: CHAT_WINDOW_DEFAULT_WIDTH,
+    height: CHAT_WINDOW_DEFAULT_HEIGHT,
+    initialized: false,
+  });
   const [selectedChatAgentId, setSelectedChatAgentId] = useState<string | null>(
     null,
   );
@@ -2669,6 +2722,116 @@ export function OfficeScreen({
       setSelectedChatAgentId(state.agents[0].agentId);
     }
   }, [chatOpen, selectedChatAgentId, state.agents]);
+
+  useEffect(() => {
+    if (!chatOpen) return;
+    setChatWindowFrame((current) => {
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      if (current.initialized) {
+        return constrainChatWindowFrame(current, viewportWidth, viewportHeight);
+      }
+
+      const buttonClearance = 58;
+      const rightOffset = sidebarOpen ? 348 : 12;
+      return constrainChatWindowFrame(
+        {
+          ...current,
+          x: viewportWidth - current.width - rightOffset,
+          y: viewportHeight - current.height - buttonClearance,
+          initialized: true,
+        },
+        viewportWidth,
+        viewportHeight,
+      );
+    });
+  }, [chatOpen, sidebarOpen]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setChatWindowFrame((current) =>
+        current.initialized
+          ? constrainChatWindowFrame(current, window.innerWidth, window.innerHeight)
+          : current,
+      );
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const handleChatWindowDragStart = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("button,input,textarea,select,a")) {
+        return;
+      }
+      event.preventDefault();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startFrame = chatWindowFrame;
+
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        const nextFrame = constrainChatWindowFrame(
+          {
+            ...startFrame,
+            x: startFrame.x + moveEvent.clientX - startX,
+            y: startFrame.y + moveEvent.clientY - startY,
+            initialized: true,
+          },
+          window.innerWidth,
+          window.innerHeight,
+        );
+        setChatWindowFrame(nextFrame);
+      };
+      const handleMouseUp = () => {
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+      };
+
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp, { once: true });
+    },
+    [chatWindowFrame],
+  );
+
+  const handleChatWindowResizeStart = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startFrame = chatWindowFrame;
+
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        const maxWidth = window.innerWidth - startFrame.x - CHAT_WINDOW_VIEWPORT_MARGIN;
+        const maxHeight = window.innerHeight - startFrame.y - CHAT_WINDOW_VIEWPORT_MARGIN;
+        setChatWindowFrame({
+          ...startFrame,
+          width: clampValue(
+            startFrame.width + moveEvent.clientX - startX,
+            CHAT_WINDOW_MIN_WIDTH,
+            Math.max(CHAT_WINDOW_MIN_WIDTH, maxWidth),
+          ),
+          height: clampValue(
+            startFrame.height + moveEvent.clientY - startY,
+            CHAT_WINDOW_MIN_HEIGHT,
+            Math.max(CHAT_WINDOW_MIN_HEIGHT, maxHeight),
+          ),
+          initialized: true,
+        });
+      };
+      const handleMouseUp = () => {
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+      };
+
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp, { once: true });
+    },
+    [chatWindowFrame],
+  );
 
   const remoteChatAgentIds = useMemo(
     () => (remoteOfficeSnapshot?.agents ?? []).map((agent) => `remote:${agent.agentId}`),
@@ -4650,10 +4813,10 @@ export function OfficeScreen({
       ) : null}
 
       {showOpenClawConsole ? (
-        <section className="pointer-events-auto fixed bottom-3 left-3 z-30 flex w-[520px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded border border-cyan-500/25 bg-black/78 shadow-2xl backdrop-blur">
-          <div className="flex items-center justify-between border-b border-cyan-500/15 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-200/80">
+        <section className="pointer-events-auto fixed bottom-10 right-4 z-30 flex w-[min(860px,calc(100vw-2rem))] max-h-[52vh] flex-col overflow-hidden rounded border border-cyan-500/25 bg-black/78 shadow-2xl backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-500/15 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-200/80">
             <span>OpenClaw Event Console</span>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <span className="text-[10px] text-cyan-100/45">
                 agents {state.agents.length} | events{" "}
                 {filteredOpenClawLogEntries.length}/{openClawLogEntries.length}
@@ -4697,7 +4860,7 @@ export function OfficeScreen({
             </div>
           </div>
           {!openClawConsoleCollapsed ? (
-            <div className="flex h-[320px] flex-col gap-3 overflow-y-auto bg-[#02090b]/96 px-3 py-2 font-mono text-[10px] leading-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[#02090b]/96 px-3 py-2 font-mono text-[10px] leading-4">
             <div className="rounded border border-cyan-500/10 bg-cyan-950/10 p-2">
               <div className="flex items-center gap-2">
                 <input
@@ -4862,152 +5025,186 @@ export function OfficeScreen({
       ) : null}
 
       <div
-        className={`fixed bottom-3 z-30 flex flex-col items-end gap-2 ${sidebarOpen ? "right-84" : "right-3"} ${
+        className={`fixed bottom-3 z-[70] flex flex-col items-end gap-2 ${sidebarOpen ? "right-84" : "right-3"} ${
           debugEnabled ? "hidden" : ""
         }`}
       >
         {chatOpen && (
           <div
-            className="flex overflow-hidden rounded border border-white/10 bg-[#0e0a04] shadow-2xl"
-            style={{ width: 560, height: 520 }}
+            className="fixed z-[60] flex overflow-hidden rounded border border-white/10 bg-[#0e0a04] shadow-2xl"
+            style={{
+              left: chatWindowFrame.x,
+              top: chatWindowFrame.y,
+              width: chatWindowFrame.width,
+              height: chatWindowFrame.height,
+            }}
           >
-            <div className="flex w-44 shrink-0 flex-col border-r border-white/10">
-              <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
-                <span className="font-mono text-[11px] font-semibold uppercase tracking-widest text-white/60">
-                  Agents
-                </span>
-                <span className="font-mono text-[10px] text-white/40">
-                  {chatRosterEntries.length}
-                </span>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {chatRosterEntries.length === 0 ? (
-                  <div className="px-3 py-4 font-mono text-[11px] text-white/30">
-                    No agents.
-                  </div>
-                ) : (
-                  chatRosterEntries.map((agent) => {
-                    const isSelected = agent.id === selectedChatAgentId;
-                    const isRunning = agent.isRunning;
-                    return (
-                      <button
-                        key={agent.id}
-                        type="button"
-                        onClick={() => handleOpenAgentChat(agent.id)}
-                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors ${
-                          isSelected
-                            ? "bg-white/10 text-white"
-                            : "text-white/50 hover:bg-white/5 hover:text-white/80"
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${isRunning ? "bg-emerald-400" : "bg-white/20"}`}
-                        />
-                        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-                          {agent.name}
-                        </span>
-                        {agent.kind === "remote" ? (
-                          <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.14em] text-cyan-300/60">
-                            Remote
-                          </span>
-                        ) : null}
-                        <span className="sr-only">
-                          {agent.kind === "remote" ? "Remote agent" : "Local agent"}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            <div className="flex min-w-0 flex-1 flex-col">
-              {focusedChatAgent ? (
-                <AgentChatPanel
-                  agent={focusedChatAgent}
-                  isSelected={false}
-                  canSend={status === "connected"}
-                  models={gatewayModels}
-                  stopBusy={
-                    chatController.stopBusyAgentId === focusedChatAgent.agentId
-                  }
-                  onLoadMoreHistory={() => {}}
-                  onOpenSettings={() =>
-                    openAgentEditor(focusedChatAgent.agentId, "IDENTITY.md")
-                  }
-                  onNewSession={() =>
-                    chatController.handleNewSession(focusedChatAgent.agentId)
-                  }
-                  onModelChange={(value) =>
-                    dispatch({
-                      type: "updateAgent",
-                      agentId: focusedChatAgent.agentId,
-                      patch: { model: value ?? undefined },
-                    })
-                  }
-                  onThinkingChange={(value) =>
-                    dispatch({
-                      type: "updateAgent",
-                      agentId: focusedChatAgent.agentId,
-                      patch: { thinkingLevel: value ?? undefined },
-                    })
-                  }
-                  onDraftChange={(value) =>
-                    chatController.handleDraftChange(
-                      focusedChatAgent.agentId,
-                      value,
-                    )
-                  }
-                  onSend={(message) => {
-                    void handleChatSend(
-                      focusedChatAgent.agentId,
-                      focusedChatAgent.sessionKey,
-                      message,
-                    );
-                  }}
-                  onRemoveQueuedMessage={(index) =>
-                    chatController.removeQueuedMessage(
-                      focusedChatAgent.agentId,
-                      index,
-                    )
-                  }
-                  onStopRun={() => {
-                    void chatController.handleStopRun(
-                      focusedChatAgent.agentId,
-                      focusedChatAgent.sessionKey,
-                    );
-                  }}
-                  onAvatarShuffle={() =>
-                    openAgentEditor(focusedChatAgent.agentId, "avatar")
-                  }
-                  onVoiceSend={handleVoiceSend}
-                />
-              ) : focusedRemoteChatTarget && focusedRemoteChatState ? (
-                <RemoteAgentChatPanel
-                  agentName={focusedRemoteChatTarget.name}
-                  canSend={remoteMessagingAvailable}
-                  sending={focusedRemoteChatState.sending}
-                  draft={focusedRemoteChatState.draft}
-                  error={focusedRemoteChatState.error}
-                  messages={focusedRemoteChatState.messages}
-                  disabledReason={remoteMessagingDisabledReason}
-                  onDraftChange={(value) => {
-                    updateRemoteChatSession(focusedRemoteChatTarget.id, (session) => ({
-                      ...session,
-                      draft: value,
-                      error: null,
-                    }));
-                  }}
-                  onSend={(message) => {
-                    void handleChatSend(focusedRemoteChatTarget.id, "", message);
-                  }}
-                />
-              ) : (
-                <div className="flex flex-1 items-center justify-center font-mono text-[12px] text-white/30">
-                  Select an agent to chat.
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <div
+                className="flex cursor-move items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5"
+                onMouseDown={handleChatWindowDragStart}
+              >
+                <div className="flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-400/80">
+                  <GripHorizontal className="h-3.5 w-3.5 text-white/35" />
+                  <span>Chat</span>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setChatOpen(false)}
+                  className="rounded border border-white/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-white/45 transition-colors hover:border-white/20 hover:text-white/70"
+                >
+                  Hide
+                </button>
+              </div>
+
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <div className="flex w-44 shrink-0 flex-col border-r border-white/10">
+                  <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-widest text-white/60">
+                      Agents
+                    </span>
+                    <span className="font-mono text-[10px] text-white/40">
+                      {chatRosterEntries.length}
+                    </span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto">
+                    {chatRosterEntries.length === 0 ? (
+                      <div className="px-3 py-4 font-mono text-[11px] text-white/30">
+                        No agents.
+                      </div>
+                    ) : (
+                      chatRosterEntries.map((agent) => {
+                        const isSelected = agent.id === selectedChatAgentId;
+                        const isRunning = agent.isRunning;
+                        return (
+                          <button
+                            key={agent.id}
+                            type="button"
+                            onClick={() => handleOpenAgentChat(agent.id)}
+                            className={`flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors ${
+                              isSelected
+                                ? "bg-white/10 text-white"
+                                : "text-white/50 hover:bg-white/5 hover:text-white/80"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                isRunning ? "bg-emerald-400" : "bg-white/20"
+                              }`}
+                            />
+                            <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                              {agent.name}
+                            </span>
+                            {agent.kind === "remote" ? (
+                              <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.14em] text-cyan-300/60">
+                                Remote
+                              </span>
+                            ) : null}
+                            <span className="sr-only">
+                              {agent.kind === "remote" ? "Remote agent" : "Local agent"}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex min-w-0 flex-1 flex-col">
+                  {focusedChatAgent ? (
+                    <AgentChatPanel
+                      agent={focusedChatAgent}
+                      isSelected={false}
+                      canSend={status === "connected"}
+                      models={gatewayModels}
+                      stopBusy={
+                        chatController.stopBusyAgentId === focusedChatAgent.agentId
+                      }
+                      onLoadMoreHistory={() => {}}
+                      onOpenSettings={() =>
+                        openAgentEditor(focusedChatAgent.agentId, "IDENTITY.md")
+                      }
+                      onNewSession={() =>
+                        chatController.handleNewSession(focusedChatAgent.agentId)
+                      }
+                      onModelChange={(value) =>
+                        dispatch({
+                          type: "updateAgent",
+                          agentId: focusedChatAgent.agentId,
+                          patch: { model: value ?? undefined },
+                        })
+                      }
+                      onThinkingChange={(value) =>
+                        dispatch({
+                          type: "updateAgent",
+                          agentId: focusedChatAgent.agentId,
+                          patch: { thinkingLevel: value ?? undefined },
+                        })
+                      }
+                      onDraftChange={(value) =>
+                        chatController.handleDraftChange(
+                          focusedChatAgent.agentId,
+                          value,
+                        )
+                      }
+                      onSend={(message) => {
+                        void handleChatSend(
+                          focusedChatAgent.agentId,
+                          focusedChatAgent.sessionKey,
+                          message,
+                        );
+                      }}
+                      onRemoveQueuedMessage={(index) =>
+                        chatController.removeQueuedMessage(
+                          focusedChatAgent.agentId,
+                          index,
+                        )
+                      }
+                      onStopRun={() => {
+                        void chatController.handleStopRun(
+                          focusedChatAgent.agentId,
+                          focusedChatAgent.sessionKey,
+                        );
+                      }}
+                      onAvatarShuffle={() =>
+                        openAgentEditor(focusedChatAgent.agentId, "avatar")
+                      }
+                      onVoiceSend={handleVoiceSend}
+                    />
+                  ) : focusedRemoteChatTarget && focusedRemoteChatState ? (
+                    <RemoteAgentChatPanel
+                      agentName={focusedRemoteChatTarget.name}
+                      canSend={remoteMessagingAvailable}
+                      sending={focusedRemoteChatState.sending}
+                      draft={focusedRemoteChatState.draft}
+                      error={focusedRemoteChatState.error}
+                      messages={focusedRemoteChatState.messages}
+                      disabledReason={remoteMessagingDisabledReason}
+                      onDraftChange={(value) => {
+                        updateRemoteChatSession(focusedRemoteChatTarget.id, (session) => ({
+                          ...session,
+                          draft: value,
+                          error: null,
+                        }));
+                      }}
+                      onSend={(message) => {
+                        void handleChatSend(focusedRemoteChatTarget.id, "", message);
+                      }}
+                    />
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center font-mono text-[12px] text-white/30">
+                      Select an agent to chat.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
+            <button
+              type="button"
+              aria-label="Resize chat"
+              onMouseDown={handleChatWindowResizeStart}
+              className="absolute bottom-0 right-0 z-[100] h-10 w-10 cursor-nwse-resize border-b-4 border-r-4 border-amber-500/40 opacity-50 transition-all hover:scale-110 hover:opacity-100 active:scale-95"
+            />
           </div>
         )}
 

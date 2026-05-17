@@ -2332,7 +2332,7 @@ export function RetroOffice3D({
   githubSkill = null,
   taskManagerEnabled = false,
   soundclawEnabled = false,
-  officeTitle = "Luke Headquarters",
+  officeTitle = "Mercury Headquarters",
   officeTitleLoaded = false,
   remoteOfficeEnabled = false,
   remoteOfficeSourceKind = "presence_endpoint",
@@ -5974,12 +5974,20 @@ export function RetroOffice3D({
 
       {/* Title — top center overlay. */}
       {!immersiveOverlayActive ? (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none select-none z-10">
+        <div className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
           <div className="flex items-center gap-3">
             <div className="h-px w-12 bg-gradient-to-r from-transparent to-amber-500/40" />
-            <span className="text-sm tracking-[0.3em] text-amber-300/80 font-bold uppercase">
-              {officeTitle}
-            </span>
+            <input
+              type="text"
+              value={officeTitle}
+              maxLength={48}
+              disabled={!officeTitleLoaded || readOnly}
+              aria-label="Office title"
+              title={readOnly ? officeTitle : "Edit office title"}
+              onChange={(event) => onOfficeTitleChange?.(event.target.value)}
+              className="min-w-[18rem] max-w-[42vw] border-none bg-transparent px-2 text-center text-sm font-bold uppercase tracking-[0.3em] text-amber-300/80 outline-none transition-colors hover:text-amber-200 focus:text-amber-100 disabled:pointer-events-none disabled:opacity-80"
+              placeholder="Office Headquarters"
+            />
             <div className="h-px w-12 bg-gradient-to-l from-transparent to-amber-500/40" />
           </div>
         </div>

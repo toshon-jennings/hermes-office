@@ -240,42 +240,66 @@ const activeSendEventFns = new Set();
 // Disk persistence for conversation history
 // ---------------------------------------------------------------------------
 
-const HISTORY_FILE = path.join(HOME, ".hermes", "clawd3d-history.json");
+const STATE_FILE = path.join(HOME, ".hermes", "claw3d-state.json");
 let persistDebounceTimer = null;
 
-function loadHistoryFromDisk() {
+function loadStateFromDisk() {
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
-      const raw = fs.readFileSync(HISTORY_FILE, "utf8");
+    if (fs.existsSync(STATE_FILE)) {
+      const raw = fs.readFileSync(STATE_FILE, "utf8");
       const data = JSON.parse(raw);
       if (data && typeof data === "object") {
-        for (const [key, messages] of Object.entries(data)) {
-          if (Array.isArray(messages)) conversationHistory.set(key, messages);
+        if (data.history) {
+          for (const [key, messages] of Object.entries(data.history)) {
+            if (Array.isArray(messages)) conversationHistory.set(key, messages);
+          }
         }
-        console.log(`[hermes-adapter] Loaded history for ${Object.keys(data).length} session(s).`);
+        if (data.settings) {
+          for (const [key, settings] of Object.entries(data.settings)) {
+            sessionSettings.set(key, settings);
+          }
+        }
+        if (data.files) {
+          for (const [key, content] of Object.entries(data.files)) {
+            agentFiles.set(key, content);
+          }
+        }
+        if (data.jobs) {
+          for (const [key, job] of Object.entries(data.jobs)) {
+            cronJobs.set(key, job);
+          }
+        }
+        if (data.agents) {
+          for (const [key, agent] of Object.entries(data.agents)) {
+            if (key !== AGENT_ID) agentRegistry.set(key, agent);
+          }
+        }
+        console.log(`[hermes-adapter] Loaded state: ${conversationHistory.size} sessions, ${agentRegistry.size} agents.`);
       }
     }
   } catch (err) {
-    console.warn("[hermes-adapter] Could not load history:", sanitizeErrorMessage(err));
+    console.warn("[hermes-adapter] Could not load state:", sanitizeErrorMessage(err));
   }
 }
 
-function saveHistoryToDisk() {
+function saveStateToDisk() {
   if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
   persistDebounceTimer = setTimeout(() => {
     try {
-      const data = {};
-      for (const [key, messages] of conversationHistory.entries()) {
-        if (messages.length > 0) data[key] = messages;
-      }
-      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-      fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2), "utf8");
+      const data = {
+        history: Object.fromEntries(conversationHistory),
+        settings: Object.fromEntries(sessionSettings),
+        files: Object.fromEntries(agentFiles),
+        jobs: Object.fromEntries(cronJobs),
+        agents: Object.fromEntries(agentRegistry),
+      };
+      fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+      fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), "utf8");
     } catch (err) {
-      console.warn("[hermes-adapter] Could not save history:", sanitizeErrorMessage(err));
+      console.warn("[hermes-adapter] Could not save state:", sanitizeErrorMessage(err));
     }
   }, 500);
 }
-
 function getHistory(sessionKey) {
   if (!conversationHistory.has(sessionKey)) conversationHistory.set(sessionKey, []);
   return conversationHistory.get(sessionKey);
@@ -283,7 +307,7 @@ function getHistory(sessionKey) {
 
 function clearHistory(sessionKey) {
   conversationHistory.delete(sessionKey);
-  saveHistoryToDisk();
+  saveStateToDisk();
 }
 
 function randomId() {
@@ -582,6 +606,7 @@ async function execSpawnAgent(args) {
     id: newId, name, workspace: `${HOME}/.hermes/workspace-${slug}`,
     role, systemPrompt, settings: { wipe, continuity, model, boundaries },
   });
+  saveStateToDisk();
 
   console.log(`[hermes-adapter] Spawned agent: ${name} (${newId})`);
 
@@ -641,7 +666,7 @@ async function execDelegateTask(args) {
     if (agent.settings.continuity !== false) {
       history.push({ role: "user", content: message });
       history.push({ role: "assistant", content: responseText });
-      saveHistoryToDisk();
+      saveStateToDisk();
     }
 
     emitSub("final", { stopReason: "end_turn", message: { role: "assistant", content: responseText } });
@@ -707,6 +732,7 @@ function execDismissAgent(args) {
   const agent = agentRegistry.get(targetId);
   if (!agent) return JSON.stringify({ ok: false, error: `Agent ${targetId} not found` });
   agentRegistry.delete(targetId);
+  saveStateToDisk();
   clearHistory(`agent:${targetId}:${MAIN_KEY}`);
   console.log(`[hermes-adapter] Dismissed agent: ${agent.name} (${targetId})`);
   return JSON.stringify({ ok: true, dismissed: targetId });
@@ -808,7 +834,7 @@ async function runAgenticLoop({ sessionKey, agentId, userMessage, model, tools, 
   if (agent?.settings?.continuity !== false) {
     history.push({ role: "user", content: userMessage });
     history.push({ role: "assistant", content: finalText });
-    saveHistoryToDisk();
+    saveStateToDisk();
   }
 
   return finalText;
@@ -851,6 +877,7 @@ async function handleMethod(method, params, id, sendEvent) {
         role: "", systemPrompt: `You are ${agentName}.`,
         settings: { wipe: false, continuity: true, model: HERMES_MODEL },
       });
+  saveStateToDisk();
       return resOk(id, { agentId: newId, name: agentName, workspace });
     }
 
@@ -858,6 +885,7 @@ async function handleMethod(method, params, id, sendEvent) {
       const delId = typeof p.agentId === "string" ? p.agentId : "";
       if (delId && delId !== AGENT_ID) {
         agentRegistry.delete(delId);
+        saveStateToDisk();
         clearHistory(`agent:${delId}:${MAIN_KEY}`);
       }
       return resOk(id, { ok: true, removedBindings: 0 });
@@ -870,6 +898,7 @@ async function handleMethod(method, params, id, sendEvent) {
         if (typeof p.name === "string" && p.name.trim()) existing.name = p.name.trim();
         if (typeof p.workspace === "string" && p.workspace.trim()) existing.workspace = p.workspace.trim();
         if (typeof p.role === "string") existing.role = p.role.trim();
+        saveStateToDisk();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
     }
@@ -883,6 +912,7 @@ async function handleMethod(method, params, id, sendEvent) {
     case "agents.files.set": {
       const key = `${p.agentId || AGENT_ID}/${p.name || ""}`;
       agentFiles.set(key, typeof p.content === "string" ? p.content : "");
+      saveStateToDisk();
       return resOk(id, {});
     }
 
@@ -942,6 +972,7 @@ async function handleMethod(method, params, id, sendEvent) {
       if (p.execSecurity !== undefined) next.execSecurity = p.execSecurity;
       if (p.execAsk !== undefined) next.execAsk = p.execAsk;
       sessionSettings.set(key, next);
+      saveStateToDisk();
       const resolvedModel = await resolveHermesModel(next.model || HERMES_MODEL);
       return resOk(id, { ok: true, key, entry: { thinkingLevel: next.thinkingLevel },
         resolved: { model: resolvedModel, modelProvider: "hermes" } });
@@ -1126,12 +1157,15 @@ async function handleMethod(method, params, id, sendEvent) {
         payload: p.payload || { kind: "systemEvent", text: "tick" }, state: {},
       };
       cronJobs.set(jobId, job);
+      saveStateToDisk();
       return resOk(id, job);
     }
 
     case "cron.remove": {
       const jobId = typeof p.id === "string" ? p.id : "";
-      return resOk(id, { ok: true, removed: cronJobs.delete(jobId) });
+      const removed = cronJobs.delete(jobId);
+      if (removed) saveStateToDisk();
+      return resOk(id, { ok: true, removed });
     }
 
     case "cron.patch": {
@@ -1145,6 +1179,7 @@ async function handleMethod(method, params, id, sendEvent) {
       if (p.payload !== undefined) updated.payload = p.payload;
       updated.updatedAtMs = Date.now();
       cronJobs.set(jobId, updated);
+      saveStateToDisk();
       return resOk(id, { ok: true, job: updated });
     }
 
@@ -1275,5 +1310,5 @@ function startAdapter() {
   });
 }
 
-loadHistoryFromDisk();
+loadStateFromDisk();
 startAdapter();
