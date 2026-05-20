@@ -918,13 +918,38 @@ async function handleMethod(method, params, id, sendEvent) {
 
     // --- Config -------------------------------------------------------------
 
-    case "config.get":
-      return resOk(id, { config: { gateway: { reload: { mode: "hot" } } },
-        hash: "hermes-adapter", exists: true, path: CONFIG_PATH });
+    case "config.get": {
+      let diskConfig = { gateway: { reload: { mode: "hot" } } };
+      let diskHash = "hermes-adapter";
+      let diskExists = false;
+      try {
+        if (fs.existsSync(CONFIG_PATH)) {
+          const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            diskConfig = parsed;
+            diskHash = require("crypto").createHash("sha1").update(raw).digest("hex").slice(0, 12);
+            diskExists = true;
+          }
+        }
+      } catch { /* ignore read errors, fall back to defaults */ }
+      return resOk(id, { config: diskConfig, hash: diskHash, exists: diskExists, path: CONFIG_PATH });
+    }
 
     case "config.patch":
-    case "config.set":
+    case "config.set": {
+      try {
+        if (typeof p.raw === "string" && p.raw.trim()) {
+          fs.mkdirSync(require("path").dirname(CONFIG_PATH), { recursive: true });
+          fs.writeFileSync(CONFIG_PATH, p.raw, "utf8");
+          const newHash = require("crypto").createHash("sha1").update(p.raw).digest("hex").slice(0, 12);
+          return resOk(id, { hash: newHash });
+        }
+      } catch (writeErr) {
+        console.warn("[hermes-adapter] Could not write config:", sanitizeErrorMessage(writeErr));
+      }
       return resOk(id, { hash: "hermes-adapter" });
+    }
 
     // --- Sessions -----------------------------------------------------------
 
@@ -1117,8 +1142,18 @@ async function handleMethod(method, params, id, sendEvent) {
 
     // --- Skills & models ----------------------------------------------------
 
-    case "skills.status":
-      return resOk(id, { skills: [] });
+    case "skills.status": {
+      const statusAgentId = typeof p.agentId === "string" ? p.agentId.trim() : AGENT_ID;
+      const statusAgent = agentRegistry.get(statusAgentId) || agentRegistry.get(AGENT_ID);
+      const workspaceDir = (statusAgent && statusAgent.workspace) ? statusAgent.workspace : `${HOME}/.hermes/workspace-hermes`;
+      const managedSkillsDir = `${HOME}/.hermes/skills`;
+      return resOk(id, { workspaceDir, managedSkillsDir, skills: [] });
+    }
+
+    case "skills.update": {
+      const updateSkillKey = typeof p.skillKey === "string" ? p.skillKey.trim() : "";
+      return resOk(id, { ok: true, skillKey: updateSkillKey, config: {} });
+    }
 
     case "models.list":
       try {
@@ -1260,7 +1295,7 @@ function startAdapter() {
               "status","config.get","config.set","config.patch",
               "agents.files.get","agents.files.set",
               "exec.approvals.get","exec.approvals.set","exec.approval.resolve",
-              "wake","skills.status","models.list",
+              "wake","skills.status","skills.update","models.list",
               "tasks.list",
               "cron.list","cron.add","cron.remove","cron.patch","cron.run"],
               events: ["chat","presence","heartbeat","cron"] },
