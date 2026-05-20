@@ -215,6 +215,13 @@ const activeRuns = new Map();
 const cronJobs = new Map();
 
 /**
+ * Tracks skills that have been enabled via skills.update.
+ * Keyed by skillKey. Value is the skill entry shape expected by the front-end.
+ * @type {Map<string, object>}
+ */
+const enabledSkillsRegistry = new Map();
+
+/**
  * @type {Map<string, {
  *   id: string, name: string, workspace: string,
  *   role?: string, systemPrompt?: string,
@@ -1147,11 +1154,43 @@ async function handleMethod(method, params, id, sendEvent) {
       const statusAgent = agentRegistry.get(statusAgentId) || agentRegistry.get(AGENT_ID);
       const workspaceDir = (statusAgent && statusAgent.workspace) ? statusAgent.workspace : `${HOME}/.hermes/workspace-hermes`;
       const managedSkillsDir = `${HOME}/.hermes/skills`;
-      return resOk(id, { workspaceDir, managedSkillsDir, skills: [] });
+      // Include any skills that have been enabled via skills.update so that
+      // the front-end's setAgentSkillEnabled can build a non-empty allowlist.
+      const trackedSkills = [...enabledSkillsRegistry.values()].map((skill) => ({
+        ...skill,
+        filePath: `${workspaceDir}/skills/${skill.skillKey}`,
+        baseDir: `${workspaceDir}/skills/${skill.skillKey}`,
+      }));
+      return resOk(id, { workspaceDir, managedSkillsDir, skills: trackedSkills });
     }
 
     case "skills.update": {
       const updateSkillKey = typeof p.skillKey === "string" ? p.skillKey.trim() : "";
+      const updateEnabled = typeof p.enabled === "boolean" ? p.enabled : true;
+      if (updateSkillKey) {
+        if (updateEnabled) {
+          // Register the skill so subsequent skills.status calls include it.
+          enabledSkillsRegistry.set(updateSkillKey, {
+            name: updateSkillKey,
+            description: "",
+            source: "openclaw-workspace",
+            bundled: false,
+            filePath: "",
+            baseDir: "",
+            skillKey: updateSkillKey,
+            always: false,
+            disabled: false,
+            blockedByAllowlist: false,
+            eligible: true,
+            requirements: { bins: [], anyBins: [], env: [], config: [], os: [] },
+            missing: { bins: [], anyBins: [], env: [], config: [], os: [] },
+            configChecks: [],
+            install: [],
+          });
+        } else {
+          enabledSkillsRegistry.delete(updateSkillKey);
+        }
+      }
       return resOk(id, { ok: true, skillKey: updateSkillKey, config: {} });
     }
 
