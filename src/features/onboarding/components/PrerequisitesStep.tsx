@@ -5,7 +5,7 @@ import { CheckCircle2, ExternalLink } from "lucide-react";
 
 const prerequisites = [
   {
-    label: "OpenClaw installed",
+    label: "Hermes installed",
     detail: "Install via npm, pnpm, or from source",
     link: "https://docs.openclaw.ai",
     linkLabel: "Installation docs",
@@ -31,7 +31,7 @@ export const PrerequisitesStep = () => (
   <div className="space-y-2.5">
     <p className="text-[13px] leading-5 text-white/70">
       Make sure you have these ready before connecting. If you already have
-      OpenClaw running, you can skip this step.
+      Hermes running, you can skip this step.
     </p>
 
     <div className="space-y-1.5">

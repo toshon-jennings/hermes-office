@@ -922,7 +922,7 @@ export const useTaskBoardController = ({
       setGatewayTasksError(
         error instanceof Error
           ? error.message
-          : "Failed to load tasks from OpenClaw.",
+          : "Failed to load tasks from Hermes.",
       );
     } finally {
       setGatewayTasksLoading(false);
